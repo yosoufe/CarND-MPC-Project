@@ -6,6 +6,7 @@
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
+#include "Eigen/LU"
 #include "MPC.h"
 #include "json.hpp"
 
@@ -16,6 +17,12 @@ using json = nlohmann::json;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+void globad2Car_T(const std::vector<double> &pg_x, const std::vector<double> &pg_y,
+									double car_x, double car_y, double psi,
+									std::vector<double> &pc_x, std::vector<double> &pc_y);
+
+double normalise_angle_diff(double diff);
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -65,11 +72,23 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+#ifdef WITH_GNUPLOT
+FILE *graph_file;
+FILE *gp_;
+void updateGraphFromFile(double px, double py);
+#endif
+
 int main() {
   uWS::Hub h;
 
   // MPC is initialized here!
   MPC mpc;
+
+#ifdef WITH_GNUPLOT
+	graph_file = std::fopen("graph_Data","w");
+	std::fclose(graph_file);
+	gp_ = popen("gnuplot -persist" , "w");
+#endif
 
   h.onMessage([&mpc](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
@@ -77,7 +96,7 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
-    cout << sdata << endl;
+		//cout << sdata << endl;
     if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
       string s = hasData(sdata);
       if (s != "") {
@@ -92,36 +111,81 @@ int main() {
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-          double steer_value;
-          double throttle_value;
+					v *= 0.44704;
+
+					//updateGraphFromFile(px,py);
+
+					vector<double> c_ptsx;
+					vector<double> c_ptsy;
+
+					globad2Car_T(ptsx, ptsy,
+											 px, py, psi,
+											 c_ptsx, c_ptsy);
+
+					Eigen::Map<Eigen::VectorXd> vecX(&c_ptsx[0],ptsx.size());
+					Eigen::Map<Eigen::VectorXd> vecY(&c_ptsy[0],ptsy.size());
+
+					int order = 3;
+					Eigen::VectorXd coef = polyfit(vecX,vecY,order);
+
+
+					double cte = polyeval(coef,0);
+					double epsi = - atan(coef[1]);
+
+//					cout << "x: " << rad2deg(px)<<
+//									" y: " << rad2deg(py)<<
+//									" d_psi: " << rad2deg(d_psi)<<
+//									" psi: " << rad2deg(psi)<<
+//									" new psi: " << rad2deg(atan(tan(psi)))<<
+//									" Before epsi: "<< rad2deg(epsi);
+//					//epsi = normalise_angle_diff(epsi);
+//					cout << " After epsi: "<< rad2deg(epsi)<< endl;
+
+
+					Eigen::VectorXd state(6);
+					//state << px, py, psi, v, cte, epsi;
+					state << 0.0, 0.0, 0.0, v, cte, epsi;
+
+					vector<vector<double>> all_vars;
+					vector<double> result = mpc.Solve(state, coef, all_vars);
+
+					double steer_value = -result[0]/deg2rad(25.0);
+					double throttle_value = result[1];
 
           json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
-          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
+
           msgJson["steering_angle"] = steer_value;
           msgJson["throttle"] = throttle_value;
 
           //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+//					vector<double> mpc_x_vals;
+//					vector<double> mpc_y_vals;
+
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
 
-          msgJson["mpc_x"] = mpc_x_vals;
-          msgJson["mpc_y"] = mpc_y_vals;
+//					globad2Car_T(all_vars[0], all_vars[1],
+//											 px, py, psi,
+//											 mpc_x_vals,mpc_y_vals);
+
+					msgJson["mpc_x"] = all_vars[0];
+					msgJson["mpc_y"] = all_vars[1];
 
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
+					int i = 0;
+					int num = 40;
+					for(double x_wp = c_ptsx.front(); i<num ; x_wp+= (c_ptsx.back() - c_ptsx.front())/num){
+						i++;
+						next_x_vals.push_back(x_wp);
+						next_y_vals.push_back(polyeval(coef,x_wp));
+					}
+
+
+					//.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
 
           msgJson["next_x"] = next_x_vals;
@@ -129,7 +193,7 @@ int main() {
 
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
+					//std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
           // the car does actuate the commands instantly.
@@ -139,12 +203,12 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+					this_thread::sleep_for(chrono::milliseconds(100));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {
         // Manual driving
-        std::string msg = "42[\"manual\",{}]";
+				std::string msg = "42[\"manual\",{}]";
         ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
       }
     }
@@ -183,3 +247,50 @@ int main() {
   }
   h.run();
 }
+
+void globad2Car_T(const std::vector<double> &pg_x, const std::vector<double> &pg_y,
+									double car_x, double car_y, double psi,
+									std::vector<double> &pc_x, std::vector<double> &pc_y){
+	if(pg_x.size() == pg_y.size() && pg_x.size()!=0){
+		for (unsigned int i = 0; i<pg_x.size();i++){
+			Eigen::VectorXd sr(3);
+			sr << pg_x[i],pg_y[i],1;
+			Eigen::MatrixXd T_car2glob(3,3);
+			T_car2glob << cos(psi),-sin(psi),car_x,
+										sin(psi),cos(psi),car_y,
+										0,0,1;
+			Eigen::VectorXd dst(3);
+			dst =  T_car2glob.inverse() * sr;
+			pc_x.push_back(dst[0]);
+			pc_y.push_back(dst[1]);
+		}
+	} else {
+		std::cout << "incompatible sizes" << std::endl;
+	}
+}
+
+double normalise_angle_diff(double diff){
+	double res = diff;
+	if(diff > M_PI/2){
+		res = diff - M_PI;
+	} else if(diff < -M_PI/2){
+		res = diff + M_PI;
+	}
+	return res;
+}
+
+#ifdef WITH_GNUPLOT
+void updateGraphFromFile(double px, double py){
+	graph_file = std::fopen("graph_Data","a");
+	if(graph_file != NULL){
+		std::string toWrite = std::to_string(px) + ' '  + std::to_string(py) + '\n'; // error
+		std::fwrite(toWrite.c_str(),1,toWrite.length(),graph_file);
+		std::fclose(graph_file);
+	}
+
+	if (gp_!=NULL){
+		fprintf(gp_ , "call '../plotScript.gp'\n");
+		std::fflush(gp_);
+	}
+}
+#endif
