@@ -16,7 +16,7 @@ These equations are very trivial to deduce, execpt the third one. The following 
 ![alt text][image2]
 
 ## Timestep Length and Elapsed Duration (N & dt)
-These parameters are important and it is always a comprimise which should be considered to choos them.
+These parameters are important and it is always a comprimise which should be considered to choose them.
 
 ### dt:
 If it is too high: It will lead to unstability because it is changing the commands too late and the optimisation would be a very difficult task.
@@ -37,4 +37,4 @@ I fitted a 3rd order polynomial to the way points and because of the transformat
 Moreover becasue of the transformation there is no need of angle normalisation when we are subtracting the desired angle and the current angle because they are small enough always if the car is following the road nicely.
 
 ## Model Predictive Control with Latency
-I decided to chose the objective function in a way that the controller should be still robust against latency without any further predictions. Because in real world this latency is not always the same and difficult to measure. Otherwise prediction of the car based on the model presented above is very easy and then the predicted states could be passed to the optimiser.
+I decided to choose the objective function in a way that the controller should be still robust against latency without any further predictions. Because in real world this latency is not always the same and difficult to measure. Otherwise prediction of the car based on the model presented above is very easy and then the predicted states could be passed to the optimiser.
